@@ -16,19 +16,11 @@ app.add_middleware(
 def get_stock(ticker: str, period: str = "1mo"):
     try:
         stock = yf.Ticker(ticker)
-
-        # Safer info fetch (info can fail or be empty)
         info = stock.info if stock.info else {}
-
         hist = stock.history(period=period)
-
-        # ❗ Handle empty history (invalid ticker or API failure)
         if hist.empty:
             raise HTTPException(status_code=404, detail="No data found for ticker")
-
-        # Moving average
         hist["MA50"] = hist["Close"].rolling(window=50).mean()
-
         price_history = []
         for index, row in hist.iterrows():
             price_history.append({
@@ -36,7 +28,6 @@ def get_stock(ticker: str, period: str = "1mo"):
                 "close": round(float(row["Close"]), 2) if not pd.isna(row["Close"]) else None,
                 "ma50": round(float(row["MA50"]), 2) if not pd.isna(row["MA50"]) else None,
             })
-
         return {
             "ticker": ticker.upper(),
             "name": info.get("longName") or ticker,
@@ -50,6 +41,42 @@ def get_stock(ticker: str, period: str = "1mo"):
             "currency": info.get("currency") or "USD",
             "history": price_history,
         }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/news/{ticker}")
+def get_news(ticker: str):
+    try:
+        stock = yf.Ticker(ticker)
+        news = stock.news or []
+        results = []
+        for item in news[:8]:
+            content = item.get("content", {})
+            results.append({
+                "title": content.get("title", ""),
+                "url": content.get("canonicalUrl", {}).get("url", "") if isinstance(content.get("canonicalUrl"), dict) else "",
+                "source": content.get("provider", {}).get("displayName", "") if isinstance(content.get("provider"), dict) else "",
+                "time": content.get("pubDate", ""),
+            })
+        return results
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/search")
+def search_tickers(q: str):
+    try:
+        results = yf.Search(q, max_results=6)
+        quotes = results.quotes if hasattr(results, "quotes") else []
+        return [
+            {
+                "ticker": item.get("symbol", ""),
+                "name": item.get("longname") or item.get("shortname") or item.get("symbol", ""),
+                "type": item.get("quoteType", ""),
+            }
+            for item in quotes
+            if item.get("symbol")
+        ]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
