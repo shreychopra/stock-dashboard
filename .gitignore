@@ -1,18 +1,37 @@
-# Logs
+# =========================
+# CLIENT (Vite / React)
+# =========================
+client/node_modules/
+client/dist/
+client/dist-ssr/
+
+# =========================
+# SERVER (Python / FastAPI)
+# =========================
+server/venv/
+server/.venv/
+server/__pycache__/
+server/*.pyc
+
+# =========================
+# ENV FILES
+# =========================
+.env
+*.local
+
+# =========================
+# LOGS
+# =========================
 logs
 *.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
-lerna-debug.log*
 
-node_modules
-dist
-dist-ssr
-*.local
-
-# Editor directories and files
+# =========================
+# SYSTEM / EDITOR
+# =========================
 .vscode/*
 !.vscode/extensions.json
 .idea
