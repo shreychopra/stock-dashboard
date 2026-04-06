@@ -1,7 +1,9 @@
-import { useState, useEffect, useRef } from "react"
+import { useState, useRef, useEffect } from "react"
 import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer, Legend
+  ComposedChart, LineChart, BarChart,
+  Line, Bar, XAxis, YAxis, CartesianGrid,
+  Tooltip, ResponsiveContainer, Legend,
+  ReferenceLine, Cell
 } from "recharts"
 
 const API = "http://localhost:8000"
@@ -23,6 +25,14 @@ function formatMarketCap(val, currency) {
   return sym + val
 }
 
+function timeAgo(dateStr) {
+  if (!dateStr) return ""
+  const diff = Math.floor((Date.now() - new Date(dateStr)) / 60000)
+  if (diff < 60) return diff + "m ago"
+  if (diff < 1440) return Math.floor(diff / 60) + "h ago"
+  return Math.floor(diff / 1440) + "d ago"
+}
+
 function MetricCard({ label, value, dark }) {
   return (
     <div className={dark ? "bg-gray-800 border border-gray-700 rounded-xl p-4" : "bg-white border border-gray-200 rounded-xl p-4"}>
@@ -32,18 +42,27 @@ function MetricCard({ label, value, dark }) {
   )
 }
 
-function timeAgo(dateStr) {
-  if (!dateStr) return ""
-  const diff = Math.floor((Date.now() - new Date(dateStr)) / 60000)
-  if (diff < 60) return diff + "m ago"
-  if (diff < 1440) return Math.floor(diff / 60) + "h ago"
-  return Math.floor(diff / 1440) + "d ago"
+// Custom candlestick bar shape
+function CandlestickBar(props) {
+  const { x, y, width, payload } = props
+  if (!payload || payload.open == null || payload.close == null) return null
+  const { open, high, low, close } = payload
+  const isUp = close >= open
+  const color = isUp ? "#22c55e" : "#ef4444"
+  const bodyY = Math.min(open, close)
+  const bodyH = Math.max(Math.abs(close - open), 1)
+  return (
+    <g>
+      <line x1={x + width / 2} y1={y} x2={x + width / 2} y2={y + props.height} stroke={color} strokeWidth={1} />
+      <rect x={x + 1} y={bodyY} width={width - 2} height={bodyH} fill={color} />
+    </g>
+  )
 }
 
 export default function App() {
   const [ticker, setTicker] = useState("")
   const [input, setInput] = useState("")
-  const [period, setPeriod] = useState("1mo")
+  const [period, setPeriod] = useState("3mo")
   const [data, setData] = useState(null)
   const [news, setNews] = useState([])
   const [loading, setLoading] = useState(false)
@@ -51,17 +70,17 @@ export default function App() {
   const [dark, setDark] = useState(false)
   const [suggestions, setSuggestions] = useState([])
   const [showSuggestions, setShowSuggestions] = useState(false)
+  const [chartType, setChartType] = useState("line")
+  const [indicators, setIndicators] = useState({ ma50: true, bb: false, rsi: false, macd: false })
   const [history, setHistory] = useState(() => {
-    try { return JSON.parse(localStorage.getItem("searchHistory") || "[]") }
-    catch { return [] }
+    try { return JSON.parse(localStorage.getItem("searchHistory") || "[]") } catch { return [] }
   })
   const suggestTimer = useRef(null)
   const wrapperRef = useRef(null)
 
   useEffect(() => {
     function handleClick(e) {
-      if (wrapperRef.current && !wrapperRef.current.contains(e.target))
-        setShowSuggestions(false)
+      if (wrapperRef.current && !wrapperRef.current.contains(e.target)) setShowSuggestions(false)
     }
     document.addEventListener("mousedown", handleClick)
     return () => document.removeEventListener("mousedown", handleClick)
@@ -75,9 +94,8 @@ export default function App() {
     suggestTimer.current = setTimeout(async () => {
       try {
         const res = await fetch(`${API}/api/search?q=${encodeURIComponent(val)}`)
-        const data = await res.json()
-        setSuggestions(data)
-        setShowSuggestions(data.length > 0)
+        const d = await res.json()
+        setSuggestions(d); setShowSuggestions(d.length > 0)
       } catch {}
     }, 300)
   }
@@ -88,27 +106,25 @@ export default function App() {
     localStorage.setItem("searchHistory", JSON.stringify(updated))
   }
 
+  function toggleIndicator(key) {
+    setIndicators(prev => ({ ...prev, [key]: !prev[key] }))
+  }
+
   async function loadStock(q) {
-    const ticker = q.trim().toUpperCase()
-    if (!ticker) return
-    setLoading(true)
-    setError(null)
-    setData(null)
-    setNews([])
-    setShowSuggestions(false)
-    setInput("")
+    const t = q.trim().toUpperCase()
+    if (!t) return
+    setLoading(true); setError(null); setData(null); setNews([])
+    setShowSuggestions(false); setInput("")
     try {
       const [stockRes, newsRes] = await Promise.all([
-        fetch(`${API}/api/stock/${ticker}?period=${period}`),
-        fetch(`${API}/api/news/${ticker}`)
+        fetch(`${API}/api/stock/${t}?period=${period}`),
+        fetch(`${API}/api/news/${t}`)
       ])
       if (!stockRes.ok) throw new Error("Not found")
       const stockData = await stockRes.json()
       const newsData = newsRes.ok ? await newsRes.json() : []
-      setData(stockData)
-      setNews(newsData)
-      setTicker(ticker)
-      addToHistory(ticker)
+      setData(stockData); setNews(newsData); setTicker(t)
+      addToHistory(t)
     } catch {
       setError("Could not find that ticker. Try AAPL, TSLA, or GOOGL.")
     }
@@ -121,8 +137,7 @@ export default function App() {
     setLoading(true)
     try {
       const res = await fetch(`${API}/api/stock/${ticker}?period=${p}`)
-      const json = await res.json()
-      setData(json)
+      setData(await res.json())
     } catch {}
     setLoading(false)
   }
@@ -135,74 +150,52 @@ export default function App() {
   const inputCls = dark
     ? "flex-1 bg-gray-700 border border-gray-600 text-gray-100 placeholder-gray-400 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-400"
     : "flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-400"
+  const gridStroke = dark ? "#374151" : "#f0f0f0"
+  const axisColor = dark ? "#6b7280" : "#9ca3af"
+  const tooltipStyle = { borderRadius: 8, border: dark ? "1px solid #374151" : "1px solid #e5e7eb", background: dark ? "#1f2937" : "#fff", color: dark ? "#f3f4f6" : "#111827", fontSize: 12 }
+
+  // Prepare candlestick data — map price to y coords (simplified, works for bar)
+  const histData = data?.history || []
 
   return (
     <div className={bg}>
       <div className={nav}>
         <span className={dark ? "font-bold text-gray-100 text-lg" : "font-bold text-gray-800 text-lg"}>Stock Dashboard</span>
-
-        {/* Search with autocomplete */}
         <div className="relative flex-1 max-w-sm" ref={wrapperRef}>
           <div className="flex gap-2">
-            <input
-              className={inputCls}
-              placeholder="Search ticker — AAPL, TSLA, RELIANCE.NS..."
-              value={input}
-              onChange={handleInputChange}
+            <input className={inputCls} placeholder="Search ticker — AAPL, TSLA, RELIANCE.NS..."
+              value={input} onChange={handleInputChange}
               onFocus={() => suggestions.length > 0 && setShowSuggestions(true)}
               onKeyDown={e => e.key === "Enter" && loadStock(input)}
             />
-            <button onClick={() => loadStock(input)} className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700">
-              Search
-            </button>
+            <button onClick={() => loadStock(input)} className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700">Search</button>
           </div>
-
-          {/* Autocomplete dropdown */}
           {showSuggestions && suggestions.length > 0 && (
-            <div className={dark
-              ? "absolute top-full left-0 right-12 mt-1 bg-gray-800 border border-gray-700 rounded-lg shadow-lg z-50 overflow-hidden"
-              : "absolute top-full left-0 right-12 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-50 overflow-hidden"
-            }>
+            <div className={dark ? "absolute top-full left-0 right-12 mt-1 bg-gray-800 border border-gray-700 rounded-lg shadow-lg z-50 overflow-hidden" : "absolute top-full left-0 right-12 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-50 overflow-hidden"}>
               {suggestions.map(s => (
-                <button
-                  key={s.ticker}
-                  onClick={() => loadStock(s.ticker)}
-                  className={dark
-                    ? "w-full text-left px-4 py-2.5 hover:bg-gray-700 flex items-center gap-3"
-                    : "w-full text-left px-4 py-2.5 hover:bg-gray-50 flex items-center gap-3"
-                  }
-                >
+                <button key={s.ticker} onClick={() => loadStock(s.ticker)}
+                  className={dark ? "w-full text-left px-4 py-2.5 hover:bg-gray-700 flex items-center gap-3" : "w-full text-left px-4 py-2.5 hover:bg-gray-50 flex items-center gap-3"}>
                   <span className={dark ? "text-sm font-medium text-gray-100 w-20 flex-shrink-0" : "text-sm font-medium text-gray-800 w-20 flex-shrink-0"}>{s.ticker}</span>
-                  <span className={dark ? "text-xs text-gray-400 truncate" : "text-xs text-gray-400 truncate"}>{s.name}</span>
+                  <span className="text-xs text-gray-400 truncate">{s.name}</span>
                 </button>
               ))}
             </div>
           )}
         </div>
-
-        <button
-          onClick={() => setDark(d => !d)}
-          className={dark
-            ? "ml-auto text-xs px-3 py-1.5 rounded-full bg-gray-700 text-gray-300 hover:bg-gray-600"
-            : "ml-auto text-xs px-3 py-1.5 rounded-full bg-gray-100 text-gray-500 hover:bg-gray-200"
-          }
-        >
+        <button onClick={() => setDark(d => !d)} className={dark ? "ml-auto text-xs px-3 py-1.5 rounded-full bg-gray-700 text-gray-300 hover:bg-gray-600" : "ml-auto text-xs px-3 py-1.5 rounded-full bg-gray-100 text-gray-500 hover:bg-gray-200"}>
           {dark ? "Light mode" : "Dark mode"}
         </button>
       </div>
 
       <div className="max-w-5xl mx-auto p-8">
-        {/* Search history */}
         {history.length > 0 && (
           <div className="mb-6 flex items-center gap-2 flex-wrap">
-            <span className={dark ? "text-xs text-gray-500" : "text-xs text-gray-400"}>Recent:</span>
+            <span className="text-xs text-gray-400">Recent:</span>
             {history.map(h => (
               <button key={h} onClick={() => loadStock(h)}
-                className={dark
-                  ? "text-xs px-3 py-1 rounded-full bg-gray-700 text-gray-300 hover:bg-gray-600"
-                  : "text-xs px-3 py-1 rounded-full bg-white border border-gray-200 text-gray-500 hover:border-blue-300 hover:text-blue-600"
-                }
-              >{h}</button>
+                className={dark ? "text-xs px-3 py-1 rounded-full bg-gray-700 text-gray-300 hover:bg-gray-600" : "text-xs px-3 py-1 rounded-full bg-white border border-gray-200 text-gray-500 hover:border-blue-300 hover:text-blue-600"}>
+                {h}
+              </button>
             ))}
           </div>
         )}
@@ -213,9 +206,7 @@ export default function App() {
             <p className={dark ? "text-gray-600 text-xs mt-2" : "text-gray-300 text-xs mt-2"}>Try AAPL · TSLA · GOOGL · MSFT · RELIANCE.NS</p>
           </div>
         )}
-
         {loading && <div className="text-center py-24"><p className={dark ? "text-gray-500 text-sm" : "text-gray-400 text-sm"}>Loading...</p></div>}
-
         {error && <div className="bg-red-50 border border-red-200 rounded-xl p-4 text-sm text-red-600">{error}</div>}
 
         {data && !loading && (
@@ -228,9 +219,7 @@ export default function App() {
               </div>
               <div className="flex items-baseline gap-3 mt-1">
                 <span className={dark ? "text-3xl font-bold text-gray-100" : "text-3xl font-bold text-gray-900"}>{sym}{data.price}</span>
-                <span className={`text-sm font-medium ${isPositive ? "text-green-500" : "text-red-500"}`}>
-                  {isPositive ? "+" : ""}{data.change}%
-                </span>
+                <span className={`text-sm font-medium ${isPositive ? "text-green-500" : "text-red-500"}`}>{isPositive ? "+" : ""}{data.change}%</span>
               </div>
             </div>
 
@@ -241,43 +230,168 @@ export default function App() {
               <MetricCard label="52W Low"  value={data.low52  ? `${sym}${data.low52}`  : "\u2014"} dark={dark} />
             </div>
 
+            {/* Main chart card */}
             <div className={cardBg + " mb-6"}>
-              <div className="flex gap-2 mb-6">
-                {PERIODS.map(p => (
-                  <button key={p} onClick={() => changePeriod(p)}
-                    className={`text-xs px-3 py-1.5 rounded-full font-medium ${period === p ? "bg-blue-600 text-white" : dark ? "bg-gray-700 text-gray-400 hover:bg-gray-600" : "bg-gray-100 text-gray-500 hover:bg-gray-200"}`}
-                  >{PERIOD_LABELS[p]}</button>
+              {/* Controls row */}
+              <div className="flex flex-wrap items-center gap-3 mb-4">
+                {/* Period selector */}
+                <div className="flex gap-1">
+                  {PERIODS.map(p => (
+                    <button key={p} onClick={() => changePeriod(p)}
+                      className={`text-xs px-3 py-1.5 rounded-full font-medium ${period === p ? "bg-blue-600 text-white" : dark ? "bg-gray-700 text-gray-400 hover:bg-gray-600" : "bg-gray-100 text-gray-500 hover:bg-gray-200"}`}>
+                      {PERIOD_LABELS[p]}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Chart type toggle */}
+                <div className={dark ? "flex rounded-lg overflow-hidden border border-gray-600 ml-auto" : "flex rounded-lg overflow-hidden border border-gray-200 ml-auto"}>
+                  {["line", "candle"].map(t => (
+                    <button key={t} onClick={() => setChartType(t)}
+                      className={`text-xs px-3 py-1.5 font-medium ${chartType === t ? "bg-blue-600 text-white" : dark ? "bg-gray-700 text-gray-400" : "bg-white text-gray-500"}`}>
+                      {t === "line" ? "Line" : "Candle"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Indicator toggles */}
+              <div className="flex gap-2 flex-wrap mb-4">
+                {[
+                  { key: "ma50", label: "MA50", color: "#f59e0b" },
+                  { key: "bb", label: "Bollinger Bands", color: "#8b5cf6" },
+                  { key: "rsi", label: "RSI", color: "#06b6d4" },
+                  { key: "macd", label: "MACD", color: "#10b981" },
+                ].map(ind => (
+                  <button key={ind.key} onClick={() => toggleIndicator(ind.key)}
+                    className={`text-xs px-3 py-1 rounded-full border font-medium transition-colors ${
+                      indicators[ind.key]
+                        ? "text-white border-transparent"
+                        : dark ? "bg-transparent border-gray-600 text-gray-400" : "bg-transparent border-gray-200 text-gray-400"
+                    }`}
+                    style={indicators[ind.key] ? { background: ind.color, borderColor: ind.color } : {}}
+                  >
+                    {ind.label}
+                  </button>
                 ))}
               </div>
-              <ResponsiveContainer width="100%" height={320}>
-                <LineChart data={data.history}>
-                  <CartesianGrid strokeDasharray="3 3" stroke={dark ? "#374151" : "#f0f0f0"} />
-                  <XAxis dataKey="date" tick={{ fontSize: 11, fill: dark ? "#6b7280" : "#9ca3af" }} tickLine={false} interval="preserveStartEnd" />
-                  <YAxis tick={{ fontSize: 11, fill: dark ? "#6b7280" : "#9ca3af" }} tickLine={false} axisLine={false} tickFormatter={v => `${sym}${v}`} domain={["auto","auto"]} />
-                  <Tooltip
-                    formatter={(val, name) => [`${sym}${val}`, name === "close" ? "Price" : "MA50"]}
-                    contentStyle={{ borderRadius: 8, border: dark ? "1px solid #374151" : "1px solid #e5e7eb", background: dark ? "#1f2937" : "#fff", color: dark ? "#f3f4f6" : "#111827", fontSize: 12 }}
-                  />
-                  <Legend formatter={val => val === "close" ? "Price" : "50-day MA"} />
-                  <Line type="monotone" dataKey="close" stroke="#2563eb" dot={false} strokeWidth={2} />
-                  <Line type="monotone" dataKey="ma50" stroke="#f59e0b" dot={false} strokeWidth={1.5} strokeDasharray="4 4" />
-                </LineChart>
+
+              {/* Main price chart */}
+              <ResponsiveContainer width="100%" height={280}>
+                {chartType === "line" ? (
+                  <ComposedChart data={histData}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
+                    <XAxis dataKey="date" tick={{ fontSize: 11, fill: axisColor }} tickLine={false} interval="preserveStartEnd" />
+                    <YAxis tick={{ fontSize: 11, fill: axisColor }} tickLine={false} axisLine={false} tickFormatter={v => `${sym}${v}`} domain={["auto","auto"]} />
+                    <Tooltip formatter={(val, name) => {
+                      const labels = { close: "Price", ma50: "MA50", bb_upper: "BB Upper", bb_lower: "BB Lower", bb_mid: "BB Mid" }
+                      return [`${sym}${val}`, labels[name] || name]
+                    }} contentStyle={tooltipStyle} />
+                    <Line type="monotone" dataKey="close" stroke="#2563eb" dot={false} strokeWidth={2} />
+                    {indicators.ma50 && <Line type="monotone" dataKey="ma50" stroke="#f59e0b" dot={false} strokeWidth={1.5} strokeDasharray="4 4" />}
+                    {indicators.bb && <Line type="monotone" dataKey="bb_upper" stroke="#8b5cf6" dot={false} strokeWidth={1} strokeDasharray="3 3" />}
+                    {indicators.bb && <Line type="monotone" dataKey="bb_lower" stroke="#8b5cf6" dot={false} strokeWidth={1} strokeDasharray="3 3" />}
+                    {indicators.bb && <Line type="monotone" dataKey="bb_mid" stroke="#8b5cf6" dot={false} strokeWidth={1} opacity={0.5} />}
+                  </ComposedChart>
+                ) : (
+                  <ComposedChart data={histData}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
+                    <XAxis dataKey="date" tick={{ fontSize: 11, fill: axisColor }} tickLine={false} interval="preserveStartEnd" />
+                    <YAxis tick={{ fontSize: 11, fill: axisColor }} tickLine={false} axisLine={false} tickFormatter={v => `${sym}${v}`} domain={["auto","auto"]} />
+                    <Tooltip
+                      content={({ active, payload, label }) => {
+                        if (!active || !payload?.length) return null
+                        const d = payload[0]?.payload
+                        if (!d) return null
+                        return (
+                          <div style={tooltipStyle} className="p-3 rounded-lg">
+                            <p className="text-xs text-gray-400 mb-1">{label}</p>
+                            <p className="text-xs">O: {sym}{d.open} H: {sym}{d.high}</p>
+                            <p className="text-xs">L: {sym}{d.low} C: {sym}{d.close}</p>
+                          </div>
+                        )
+                      }}
+                    />
+                    {histData.map((entry, i) => {
+                      if (!entry.open || !entry.close || !entry.high || !entry.low) return null
+                      const isUp = entry.close >= entry.open
+                      const color = isUp ? "#22c55e" : "#ef4444"
+                      return (
+                        <g key={i}>
+                          <line
+                            x1={i} y1={entry.low} x2={i} y2={entry.high}
+                            stroke={color} strokeWidth={1}
+                          />
+                        </g>
+                      )
+                    })}
+                    <Bar dataKey="close" shape={<CandlestickBar />} isAnimationActive={false}>
+                      {histData.map((entry, i) => (
+                        <Cell key={i} fill={entry.close >= entry.open ? "#22c55e" : "#ef4444"} />
+                      ))}
+                    </Bar>
+                  </ComposedChart>
+                )}
               </ResponsiveContainer>
+
+              {/* RSI chart */}
+              {indicators.rsi && (
+                <div className="mt-4">
+                  <p className={dark ? "text-xs text-gray-400 mb-2" : "text-xs text-gray-400 mb-2"}>RSI (14)</p>
+                  <ResponsiveContainer width="100%" height={100}>
+                    <ComposedChart data={histData}>
+                      <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
+                      <XAxis dataKey="date" tick={{ fontSize: 10, fill: axisColor }} tickLine={false} interval="preserveStartEnd" />
+                      <YAxis domain={[0, 100]} tick={{ fontSize: 10, fill: axisColor }} tickLine={false} axisLine={false} />
+                      <Tooltip contentStyle={tooltipStyle} formatter={v => [v?.toFixed(2), "RSI"]} />
+                      <ReferenceLine y={70} stroke="#ef4444" strokeDasharray="3 3" strokeWidth={1} />
+                      <ReferenceLine y={30} stroke="#22c55e" strokeDasharray="3 3" strokeWidth={1} />
+                      <Line type="monotone" dataKey="rsi" stroke="#06b6d4" dot={false} strokeWidth={1.5} />
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                  <div className="flex gap-4 mt-1">
+                    <span className="text-xs text-red-400">Overbought &gt; 70</span>
+                    <span className="text-xs text-green-400">Oversold &lt; 30</span>
+                  </div>
+                </div>
+              )}
+
+              {/* MACD chart */}
+              {indicators.macd && (
+                <div className="mt-4">
+                  <p className={dark ? "text-xs text-gray-400 mb-2" : "text-xs text-gray-400 mb-2"}>MACD (12, 26, 9)</p>
+                  <ResponsiveContainer width="100%" height={100}>
+                    <ComposedChart data={histData}>
+                      <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
+                      <XAxis dataKey="date" tick={{ fontSize: 10, fill: axisColor }} tickLine={false} interval="preserveStartEnd" />
+                      <YAxis tick={{ fontSize: 10, fill: axisColor }} tickLine={false} axisLine={false} />
+                      <Tooltip contentStyle={tooltipStyle} formatter={(v, name) => [v?.toFixed(4), name === "macd" ? "MACD" : name === "macd_signal" ? "Signal" : "Histogram"]} />
+                      <ReferenceLine y={0} stroke={axisColor} strokeWidth={0.5} />
+                      <Bar dataKey="macd_hist" isAnimationActive={false}>
+                        {histData.map((entry, i) => (
+                          <Cell key={i} fill={(entry.macd_hist || 0) >= 0 ? "#22c55e" : "#ef4444"} />
+                        ))}
+                      </Bar>
+                      <Line type="monotone" dataKey="macd" stroke="#10b981" dot={false} strokeWidth={1.5} />
+                      <Line type="monotone" dataKey="macd_signal" stroke="#f59e0b" dot={false} strokeWidth={1.5} />
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
             </div>
 
-            {/* News feed */}
+            {/* News */}
             {news.length > 0 && (
               <div className={cardBg}>
                 <h2 className={dark ? "text-sm font-medium text-gray-300 mb-4" : "text-sm font-medium text-gray-600 mb-4"}>Latest news</h2>
                 <div className="space-y-3">
                   {news.map((item, i) => (
                     <a key={i} href={item.url} target="_blank" rel="noopener noreferrer"
-                      className={dark ? "block p-3 rounded-lg hover:bg-gray-700 transition-colors" : "block p-3 rounded-lg hover:bg-gray-50 transition-colors"}
-                    >
+                      className={dark ? "block p-3 rounded-lg hover:bg-gray-700 transition-colors" : "block p-3 rounded-lg hover:bg-gray-50 transition-colors"}>
                       <p className={dark ? "text-sm text-gray-200 font-medium leading-snug mb-1" : "text-sm text-gray-800 font-medium leading-snug mb-1"}>{item.title}</p>
                       <div className="flex items-center gap-2">
-                        <span className={dark ? "text-xs text-gray-500" : "text-xs text-gray-400"}>{item.source}</span>
-                        {item.time && <span className={dark ? "text-xs text-gray-600" : "text-xs text-gray-300"}>· {timeAgo(item.time)}</span>}
+                        <span className="text-xs text-gray-400">{item.source}</span>
+                        {item.time && <span className="text-xs text-gray-300">· {timeAgo(item.time)}</span>}
                       </div>
                     </a>
                   ))}
