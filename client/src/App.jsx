@@ -3,7 +3,7 @@ import {
   ComposedChart, LineChart, BarChart,
   Line, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, Legend,
-  ReferenceLine, Cell
+  ReferenceLine, Cell, Brush
 } from "recharts"
 
 const API = import.meta.env.VITE_API_URL || "http://localhost:8000"
@@ -41,6 +41,15 @@ function timeAgo(dateStr) {
   return Math.floor(diff / 1440) + "d ago"
 }
 
+function formatXAxis(dateStr, period) {
+  if (!dateStr) return ""
+  const [y, m, d] = dateStr.split("-")
+  if (period === "1wk" || period === "1mo") return `${d}/${m}`
+  if (period === "3mo" || period === "6mo") return `${d}/${m}/${y.slice(2)}`
+  const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+  return `${monthNames[parseInt(m) - 1]} ${y.slice(2)}`
+}
+
 function MetricCard({ label, value, dark }) {
   return (
     <div className={dark ? "bg-gray-800 border border-gray-700 rounded-xl p-4" : "bg-white border border-gray-200 rounded-xl p-4"}>
@@ -50,23 +59,41 @@ function MetricCard({ label, value, dark }) {
   )
 }
 
-function CandlestickBar(props) {
-  const { x, y, width, payload } = props
-  if (!payload || payload.open == null || payload.close == null) return null
-  const { open, close } = payload
-  const isUp = close >= open
-  const color = isUp ? "#22c55e" : "#ef4444"
-  const bodyY = Math.min(open, close)
-  const bodyH = Math.max(Math.abs(close - open), 1)
+function Candlesticks({ data, xScale, yScale, candleWidth = 6 }) {
+  if (!data || !xScale || !yScale) return null
   return (
     <g>
-      <rect x={x + 1} y={bodyY} width={width - 2} height={bodyH} fill={color} />
+      {data.map((entry, i) => {
+        if (!entry.open || !entry.close || !entry.high || !entry.low) return null
+        const isUp = entry.close >= entry.open
+        const color = isUp ? "#22c55e" : "#ef4444"
+        const cx = xScale(i)
+        const highY = yScale(entry.high)
+        const lowY = yScale(entry.low)
+        const openY = yScale(entry.open)
+        const closeY = yScale(entry.close)
+        const bodyTop = Math.min(openY, closeY)
+        const bodyH = Math.max(Math.abs(closeY - openY), 1)
+        const half = candleWidth / 2
+        return (
+          <g key={i}>
+            <line x1={cx} y1={highY} x2={cx} y2={lowY} stroke={color} strokeWidth={1} />
+            <rect x={cx - half} y={bodyTop} width={candleWidth} height={bodyH} fill={color} />
+          </g>
+        )
+      })}
     </g>
   )
 }
 
 export default function App() {
   const [page, setPage] = useState("stock")
+  const [compareSuggestions1, setCompareSuggestions1] = useState([])
+  const [compareSuggestions2, setCompareSuggestions2] = useState([])
+  const [showCompareSug1, setShowCompareSug1] = useState(false)
+  const [showCompareSug2, setShowCompareSug2] = useState(false)
+  const compareSugTimer1 = useRef(null)
+  const compareSugTimer2 = useRef(null)
   const [ticker, setTicker] = useState("")
   const [input, setInput] = useState("")
   const [period, setPeriod] = useState("3mo")
@@ -90,6 +117,7 @@ export default function App() {
   const [compareLoading, setCompareLoading] = useState(false)
   const [heatmapData, setHeatmapData] = useState(null)
   const [heatmapLoading, setHeatmapLoading] = useState(false)
+  const [suggestIndex, setSuggestIndex] = useState(-1)
   const [history, setHistory] = useState(() => {
     try { return JSON.parse(localStorage.getItem("searchHistory") || "[]") } catch { return [] }
   })
@@ -119,6 +147,26 @@ export default function App() {
     fetchWatchlist()
   }
 
+  async function handleCompareInput(val, num) {
+    if (num === 1) { setCompareT1(val); clearTimeout(compareSugTimer1.current) }
+    else { setCompareT2(val); clearTimeout(compareSugTimer2.current) }
+    if (val.length < 1) {
+      if (num === 1) { setCompareSuggestions1([]); setShowCompareSug1(false) }
+      else { setCompareSuggestions2([]); setShowCompareSug2(false) }
+      return
+    }
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch(`${API}/api/search?q=${encodeURIComponent(val)}`)
+        const d = await res.json()
+        if (num === 1) { setCompareSuggestions1(d); setShowCompareSug1(d.length > 0) }
+        else { setCompareSuggestions2(d); setShowCompareSug2(d.length > 0) }
+      } catch { }
+    }, 300)
+    if (num === 1) compareSugTimer1.current = timer
+    else compareSugTimer2.current = timer
+  }
+
   async function removeFromWatchlist(t) {
     await fetch(`${API}/api/watchlist/${t}`, { method: "DELETE" })
     fetchWatchlist()
@@ -135,7 +183,7 @@ export default function App() {
       try {
         const res = await fetch(`${API}/api/search?q=${encodeURIComponent(val)}`)
         const d = await res.json()
-        setSuggestions(d); setShowSuggestions(d.length > 0)
+        setSuggestions(d); setSuggestIndex(-1); setShowSuggestions(d.length > 0)
       } catch { }
     }, 300)
   }
@@ -229,7 +277,12 @@ export default function App() {
     <div className={bg}>
       {/* Nav */}
       <div className={dark ? "bg-gray-800 border-b border-gray-700 px-8 py-4 flex items-center gap-6" : "bg-white border-b border-gray-200 px-8 py-4 flex items-center gap-6"}>
-        <span className={dark ? "font-bold text-gray-100 text-lg flex-shrink-0" : "font-bold text-gray-800 text-lg flex-shrink-0"}>Stock Dashboard</span>
+        <button
+          onClick={() => { setPage("stock"); setData(null); setTicker(""); setError(null) }}
+          className={dark ? "font-bold text-gray-100 text-lg flex-shrink-0 hover:opacity-70 transition-opacity" : "font-bold text-gray-800 text-lg flex-shrink-0 hover:opacity-70 transition-opacity"}
+        >
+          Stock Dashboard
+        </button>
 
         {/* Search */}
         <div className="relative flex-1 max-w-sm" ref={wrapperRef}>
@@ -237,15 +290,36 @@ export default function App() {
             <input className={inputCls + " flex-1"} placeholder="Search ticker..."
               value={input} onChange={handleInputChange}
               onFocus={() => suggestions.length > 0 && setShowSuggestions(true)}
-              onKeyDown={e => e.key === "Enter" && loadStock(input)}
+              onKeyDown={e => {
+                if (e.key === "ArrowDown") {
+                  e.preventDefault()
+                  setSuggestIndex(i => Math.min(i + 1, suggestions.length - 1))
+                } else if (e.key === "ArrowUp") {
+                  e.preventDefault()
+                  setSuggestIndex(i => Math.max(i - 1, -1))
+                } else if (e.key === "Enter") {
+                  if (suggestIndex >= 0 && suggestions[suggestIndex]) {
+                    loadStock(suggestions[suggestIndex].ticker)
+                    setSuggestIndex(-1)
+                  } else {
+                    loadStock(input)
+                  }
+                } else if (e.key === "Escape") {
+                  setShowSuggestions(false)
+                  setSuggestIndex(-1)
+                }
+              }}
             />
             <button onClick={() => loadStock(input)} className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700">Search</button>
           </div>
           {showSuggestions && suggestions.length > 0 && (
             <div className={dark ? "absolute top-full left-0 right-12 mt-1 bg-gray-800 border border-gray-700 rounded-lg shadow-lg z-50 overflow-hidden" : "absolute top-full left-0 right-12 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-50 overflow-hidden"}>
-              {suggestions.map(s => (
-                <button key={s.ticker} onClick={() => loadStock(s.ticker)}
-                  className={dark ? "w-full text-left px-4 py-2.5 hover:bg-gray-700 flex items-center gap-3" : "w-full text-left px-4 py-2.5 hover:bg-gray-50 flex items-center gap-3"}>
+              {suggestions.map((s, idx) => (
+                <button key={s.ticker} onClick={() => { loadStock(s.ticker); setSuggestIndex(-1) }}
+                  className={dark
+                    ? `w-full text-left px-4 py-2.5 flex items-center gap-3 ${idx === suggestIndex ? "bg-gray-600" : "hover:bg-gray-700"}`
+                    : `w-full text-left px-4 py-2.5 flex items-center gap-3 ${idx === suggestIndex ? "bg-blue-50" : "hover:bg-gray-50"}`
+                  }>
                   <span className={dark ? "text-sm font-medium text-gray-100 w-20 flex-shrink-0" : "text-sm font-medium text-gray-800 w-20 flex-shrink-0"}>{s.ticker}</span>
                   <span className="text-xs text-gray-400 truncate">{s.name}</span>
                 </button>
@@ -278,36 +352,110 @@ export default function App() {
         {/* ── Compare Page ── */}
         {page === "compare" && (
           <div>
-            <h1 className={dark ? "text-xl font-bold text-gray-100 mb-6" : "text-xl font-bold text-gray-800 mb-6"}>Compare stocks</h1>
+            <h1 className={dark ? "text-xl font-bold text-gray-100 mb-6" : "text-xl font-bold text-gray-800 mb-6"}>
+              Compare stocks
+            </h1>
+
             <div className={cardBg + " mb-6"}>
               <div className="flex gap-3 items-end flex-wrap">
-                <div className="flex-1 min-w-32">
+                <div className="flex-1 min-w-32 relative">
                   <label className="text-xs text-gray-400 mb-1 block">Ticker 1</label>
-                  <input className={inputCls + " w-full"} placeholder="AAPL" value={compareT1} onChange={e => setCompareT1(e.target.value.toUpperCase())} />
+                  <input
+                    className={inputCls + " w-full"}
+                    placeholder="AAPL or Apple"
+                    value={compareT1}
+                    onChange={e => handleCompareInput(e.target.value, 1)}
+                    onKeyDown={e => e.key === "Enter" && runComparison()}
+                  />
+                  {showCompareSug1 && compareSuggestions1.length > 0 && (
+                    <div className={dark ? "absolute top-full left-0 right-0 mt-1 bg-gray-800 border border-gray-700 rounded-lg z-50 overflow-hidden" : "absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg z-50 overflow-hidden"}>
+                      {compareSuggestions1.map(s => (
+                        <button
+                          key={s.ticker}
+                          onClick={() => { setCompareT1(s.ticker); setShowCompareSug1(false) }}
+                          className={dark ? "w-full text-left px-3 py-2 hover:bg-gray-700 flex items-center gap-2" : "w-full text-left px-3 py-2 hover:bg-gray-50 flex items-center gap-2"}
+                        >
+                          <span className={dark ? "text-xs font-medium text-gray-100 w-16 flex-shrink-0" : "text-xs font-medium text-gray-800 w-16 flex-shrink-0"}>{s.ticker}</span>
+                          <span className="text-xs text-gray-400 truncate">{s.name}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
-                <div className="flex-1 min-w-32">
+
+                <div className="flex-1 min-w-32 relative">
                   <label className="text-xs text-gray-400 mb-1 block">Ticker 2</label>
-                  <input className={inputCls + " w-full"} placeholder="MSFT" value={compareT2} onChange={e => setCompareT2(e.target.value.toUpperCase())} />
+                  <input
+                    className={inputCls + " w-full"}
+                    placeholder="MSFT or Microsoft"
+                    value={compareT2}
+                    onChange={e => handleCompareInput(e.target.value, 2)}
+                    onKeyDown={e => e.key === "Enter" && runComparison()}
+                  />
+                  {showCompareSug2 && compareSuggestions2.length > 0 && (
+                    <div className={dark ? "absolute top-full left-0 right-0 mt-1 bg-gray-800 border border-gray-700 rounded-lg z-50 overflow-hidden" : "absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg z-50 overflow-hidden"}>
+                      {compareSuggestions2.map(s => (
+                        <button
+                          key={s.ticker}
+                          onClick={() => { setCompareT2(s.ticker); setShowCompareSug2(false) }}
+                          className={dark ? "w-full text-left px-3 py-2 hover:bg-gray-700 flex items-center gap-2" : "w-full text-left px-3 py-2 hover:bg-gray-50 flex items-center gap-2"}
+                        >
+                          <span className={dark ? "text-xs font-medium text-gray-100 w-16 flex-shrink-0" : "text-xs font-medium text-gray-800 w-16 flex-shrink-0"}>{s.ticker}</span>
+                          <span className="text-xs text-gray-400 truncate">{s.name}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
-                <div>
-                  <label className="text-xs text-gray-400 mb-1 block">Period</label>
-                  <select className={inputCls} value={period} onChange={e => setPeriod(e.target.value)}>
-                    {PERIODS.map(p => <option key={p} value={p}>{PERIOD_LABELS[p]}</option>)}
-                  </select>
-                </div>
-                <button onClick={runComparison} className="bg-blue-600 text-white px-6 py-2 rounded-lg text-sm font-medium hover:bg-blue-700">Compare</button>
+
+                <label className="text-xs text-gray-400 mb-1 block">Period</label>
+                <select className={inputCls} value={period} onChange={e => setPeriod(e.target.value)}>
+                  {PERIODS.map(p => (
+                    <option key={p} value={p}>{PERIOD_LABELS[p]}</option>
+                  ))}
+                </select>
               </div>
+
+              <button
+                onClick={runComparison}
+                className="bg-blue-600 text-white px-6 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 mt-4"
+              >
+                Compare
+              </button>
             </div>
-            {compareLoading && <div className="text-center py-12"><p className="text-gray-400 text-sm">Loading...</p></div>}
+
+            {compareLoading && (
+              <div className="text-center py-12">
+                <p className="text-gray-400 text-sm">Loading...</p>
+              </div>
+            )}
+
             {compareData && (
               <div className={cardBg}>
-                <p className={dark ? "text-xs text-gray-400 mb-4" : "text-xs text-gray-400 mb-4"}>% change from start date — both normalised to 0%</p>
+                <p className="text-xs text-gray-400 mb-4">
+                  % change from start date — both normalised to 0%
+                </p>
+
                 <ResponsiveContainer width="100%" height={320}>
                   <LineChart data={compareData.data}>
                     <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
-                    <XAxis dataKey="date" tick={{ fontSize: 11, fill: axisColor }} tickLine={false} interval="preserveStartEnd" />
-                    <YAxis tick={{ fontSize: 11, fill: axisColor }} tickLine={false} axisLine={false} tickFormatter={v => v + "%"} />
-                    <Tooltip formatter={(v, name) => [v?.toFixed(2) + "%", name]} contentStyle={tooltipStyle} />
+                    <XAxis
+                      dataKey="date"
+                      tick={{ fontSize: 11, fill: axisColor }}
+                      tickFormatter={d => formatXAxis(d, period)}
+                      tickLine={false}
+                      interval="preserveStartEnd"
+                    />
+                    <YAxis
+                      tick={{ fontSize: 11, fill: axisColor }}
+                      tickLine={false}
+                      axisLine={false}
+                      tickFormatter={v => v + "%"}
+                    />
+                    <Tooltip
+                      formatter={(v, name) => [v?.toFixed(2) + "%", name]}
+                      contentStyle={tooltipStyle}
+                    />
                     <ReferenceLine y={0} stroke={axisColor} strokeWidth={0.5} />
                     <Legend />
                     <Line type="monotone" dataKey={compareData.tickers[0]} stroke="#2563eb" dot={false} strokeWidth={2} />
@@ -510,18 +658,35 @@ export default function App() {
                     <ResponsiveContainer width="100%" height={280}>
                       <ComposedChart data={histData}>
                         <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
-                        <XAxis dataKey="date" tick={{ fontSize: 11, fill: axisColor }} tickLine={false} interval="preserveStartEnd" />
+                        <XAxis dataKey="date" tick={{ fontSize: 11, fill: axisColor }}
+                          tickFormatter={d => formatXAxis(d, period)} tickLine={false} interval="preserveStartEnd" />
                         <YAxis tick={{ fontSize: 11, fill: axisColor }} tickLine={false} axisLine={false} tickFormatter={v => `${sym}${v}`} domain={["auto", "auto"]} />
                         <Tooltip formatter={(val, name) => {
                           const labels = { close: "Price", ma50: "MA50", bb_upper: "BB Upper", bb_lower: "BB Lower", bb_mid: "BB Mid" }
-                          return [`${sym}${val}`, labels[name] || name]
+                          return [`${sym}${Number(val).toFixed(2)}`, labels[name] || name]
                         }} contentStyle={tooltipStyle} />
                         {chartType === "line" && <Line type="monotone" dataKey="close" stroke="#2563eb" dot={false} strokeWidth={2} />}
-                        {chartType === "candle" && <Bar dataKey="close" shape={<CandlestickBar />} isAnimationActive={false}>{histData.map((e, i) => <Cell key={i} fill={e.close >= e.open ? "#22c55e" : "#ef4444"} />)}</Bar>}
+                        {chartType === "candle" && (
+                          <>
+                            <Bar dataKey="close" isAnimationActive={false} maxBarSize={8}
+                              shape={(props) => {
+                                const { x, y, width, height, index } = props
+                                const entry = histData[index]
+                                if (!entry) return <g />
+                                const isUp = (entry.close || 0) >= (entry.open || 0)
+                                const color = isUp ? "#22c55e" : "#ef4444"
+                                return <rect x={x} y={y} width={width} height={Math.max(height, 1)} fill={color} rx={1} />
+                              }}
+                            >
+                              {histData.map((e, i) => <Cell key={i} fill={(e.close || 0) >= (e.open || 0) ? "#22c55e" : "#ef4444"} />)}
+                            </Bar>
+                          </>
+                        )}
                         {indicators.ma50 && <Line type="monotone" dataKey="ma50" stroke="#f59e0b" dot={false} strokeWidth={1.5} strokeDasharray="4 4" />}
                         {indicators.bb && <Line type="monotone" dataKey="bb_upper" stroke="#8b5cf6" dot={false} strokeWidth={1} strokeDasharray="3 3" />}
                         {indicators.bb && <Line type="monotone" dataKey="bb_lower" stroke="#8b5cf6" dot={false} strokeWidth={1} strokeDasharray="3 3" />}
                         {indicators.bb && <Line type="monotone" dataKey="bb_mid" stroke="#8b5cf6" dot={false} strokeWidth={1} opacity={0.5} />}
+                        <Brush dataKey="date" height={24} stroke={dark ? "#374151" : "#e5e7eb"} fill={dark ? "#1f2937" : "#f9fafb"} travellerWidth={8} tickFormatter={d => formatXAxis(d, period)} />
                       </ComposedChart>
                     </ResponsiveContainer>
                     {indicators.rsi && (
@@ -530,7 +695,8 @@ export default function App() {
                         <ResponsiveContainer width="100%" height={100}>
                           <ComposedChart data={histData}>
                             <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
-                            <XAxis dataKey="date" tick={{ fontSize: 10, fill: axisColor }} tickLine={false} interval="preserveStartEnd" />
+                            <XAxis dataKey="date" tick={{ fontSize: 11, fill: axisColor }}
+                              tickFormatter={d => formatXAxis(d, period)} tickLine={false} interval="preserveStartEnd" />
                             <YAxis domain={[0, 100]} tick={{ fontSize: 10, fill: axisColor }} tickLine={false} axisLine={false} />
                             <Tooltip contentStyle={tooltipStyle} formatter={v => [v?.toFixed(2), "RSI"]} />
                             <ReferenceLine y={70} stroke="#ef4444" strokeDasharray="3 3" strokeWidth={1} />
@@ -547,9 +713,10 @@ export default function App() {
                         <ResponsiveContainer width="100%" height={100}>
                           <ComposedChart data={histData}>
                             <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
-                            <XAxis dataKey="date" tick={{ fontSize: 10, fill: axisColor }} tickLine={false} interval="preserveStartEnd" />
+                            <XAxis dataKey="date" tick={{ fontSize: 11, fill: axisColor }}
+                              tickFormatter={d => formatXAxis(d, period)} tickLine={false} interval="preserveStartEnd" />
                             <YAxis tick={{ fontSize: 10, fill: axisColor }} tickLine={false} axisLine={false} />
-                            <Tooltip contentStyle={tooltipStyle} formatter={(v, name) => [v?.toFixed(4), name === "macd" ? "MACD" : name === "macd_signal" ? "Signal" : "Histogram"]} />
+                            <Tooltip contentStyle={tooltipStyle} formatter={(v, name) => [v?.toFixed(2), name === "macd" ? "MACD" : name === "macd_signal" ? "Signal" : "Histogram"]} />
                             <ReferenceLine y={0} stroke={axisColor} strokeWidth={0.5} />
                             <Bar dataKey="macd_hist" isAnimationActive={false}>{histData.map((e, i) => <Cell key={i} fill={(e.macd_hist || 0) >= 0 ? "#22c55e" : "#ef4444"} />)}</Bar>
                             <Line type="monotone" dataKey="macd" stroke="#10b981" dot={false} strokeWidth={1.5} />
@@ -622,6 +789,6 @@ export default function App() {
           </div>
         )}
       </div>
-    </div>
+    </div >
   )
 }
