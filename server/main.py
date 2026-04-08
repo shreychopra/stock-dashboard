@@ -1,8 +1,37 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import create_engine, Column, Integer, String, DateTime
+from sqlalchemy.orm import declarative_base, sessionmaker
+from datetime import datetime
 import yfinance as yf
 import pandas as pd
 import numpy as np
+import os
+from dotenv import load_dotenv
+
+load_dotenv(override=True)
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL not set in .env file")
+
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,
+    pool_size=1,
+    max_overflow=0,
+)
+SessionLocal = sessionmaker(bind=engine)
+Base = declarative_base()
+
+class WatchlistItem(Base):
+    __tablename__ = "watchlist"
+    id = Column(Integer, primary_key=True, index=True)
+    ticker = Column(String, unique=True, index=True)
+    name = Column(String)
+    added_at = Column(DateTime, default=datetime.utcnow)
+
+Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
 
@@ -13,6 +42,27 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ─── Database setup ───────────────────────────────────────
+DATABASE_URL = os.getenv("DATABASE_URL")
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,
+    pool_size=1,
+    max_overflow=0,
+)
+SessionLocal = sessionmaker(bind=engine)
+Base = declarative_base()
+
+class WatchlistItem(Base):
+    __tablename__ = "watchlist"
+    id = Column(Integer, primary_key=True, index=True)
+    ticker = Column(String, unique=True, index=True)
+    name = Column(String)
+    added_at = Column(DateTime, default=datetime.utcnow)
+
+Base.metadata.create_all(bind=engine)
+
+# ─── Indicator helpers ────────────────────────────────────
 def calc_rsi(series, period=14):
     delta = series.diff()
     gain = delta.clip(lower=0).rolling(period).mean()
@@ -43,15 +93,15 @@ def safe_float(val):
     except:
         return None
 
+# ─── Stock routes ─────────────────────────────────────────
 @app.get("/api/stock/{ticker}")
-def get_stock(ticker: str, period: str = "1mo"):
+def get_stock(ticker: str, period: str = "3mo"):
     try:
         stock = yf.Ticker(ticker)
         info = stock.info if stock.info else {}
         hist = stock.history(period=period)
         if hist.empty:
             raise HTTPException(status_code=404, detail="No data found for ticker")
-
         hist["MA50"] = hist["Close"].rolling(window=50).mean()
         hist["RSI"] = calc_rsi(hist["Close"])
         macd, signal, histogram = calc_macd(hist["Close"])
@@ -62,7 +112,6 @@ def get_stock(ticker: str, period: str = "1mo"):
         hist["BB_upper"] = upper
         hist["BB_mid"] = mid
         hist["BB_lower"] = lower
-
         price_history = []
         for index, row in hist.iterrows():
             price_history.append({
@@ -80,7 +129,6 @@ def get_stock(ticker: str, period: str = "1mo"):
                 "bb_mid":   safe_float(row.get("BB_mid")),
                 "bb_lower": safe_float(row.get("BB_lower")),
             })
-
         return {
             "ticker": ticker.upper(),
             "name": info.get("longName") or ticker,
@@ -96,6 +144,58 @@ def get_stock(ticker: str, period: str = "1mo"):
         }
     except HTTPException:
         raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/compare")
+def compare_stocks(t1: str, t2: str, period: str = "3mo"):
+    try:
+        results = {}
+        for ticker in [t1.upper(), t2.upper()]:
+            stock = yf.Ticker(ticker)
+            hist = stock.history(period=period)
+            if hist.empty:
+                raise HTTPException(status_code=404, detail=f"No data for {ticker}")
+            first_close = hist["Close"].iloc[0]
+            hist["normalised"] = ((hist["Close"] - first_close) / first_close * 100).round(2)
+            results[ticker] = [
+                {"date": str(idx.date()), "value": safe_float(row["normalised"])}
+                for idx, row in hist.iterrows()
+            ]
+        all_dates = sorted(set(
+            [d["date"] for d in results[t1.upper()]] +
+            [d["date"] for d in results[t2.upper()]]
+        ))
+        t1_map = {d["date"]: d["value"] for d in results[t1.upper()]}
+        t2_map = {d["date"]: d["value"] for d in results[t2.upper()]}
+        combined = [{"date": d, t1.upper(): t1_map.get(d), t2.upper(): t2_map.get(d)} for d in all_dates]
+        return {"data": combined, "tickers": [t1.upper(), t2.upper()]}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/financials/{ticker}")
+def get_financials(ticker: str):
+    try:
+        stock = yf.Ticker(ticker)
+        income = stock.financials
+        cashflow = stock.cashflow
+        def format_statement(df):
+            if df is None or df.empty:
+                return []
+            rows = []
+            for metric in df.index:
+                row = {"metric": str(metric)}
+                for col in df.columns:
+                    val = df.loc[metric, col]
+                    row[str(col.date())] = safe_float(val)
+                rows.append(row)
+            return rows
+        return {
+            "income": format_statement(income),
+            "cashflow": format_statement(cashflow),
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -132,3 +232,45 @@ def search_tickers(q: str):
         ]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# ─── Watchlist routes ─────────────────────────────────────
+@app.get("/api/watchlist")
+def get_watchlist():
+    db = SessionLocal()
+    try:
+        items = db.query(WatchlistItem).order_by(WatchlistItem.added_at.desc()).all()
+        return [{"id": i.id, "ticker": i.ticker, "name": i.name} for i in items]
+    finally:
+        db.close()
+
+@app.post("/api/watchlist/{ticker}")
+def add_to_watchlist(ticker: str):
+    db = SessionLocal()
+    try:
+        existing = db.query(WatchlistItem).filter(WatchlistItem.ticker == ticker.upper()).first()
+        if existing:
+            return {"id": existing.id, "ticker": existing.ticker, "name": existing.name}
+        stock = yf.Ticker(ticker)
+        name = stock.info.get("longName") or ticker.upper()
+        item = WatchlistItem(ticker=ticker.upper(), name=name)
+        db.add(item)
+        db.commit()
+        db.refresh(item)
+        return {"id": item.id, "ticker": item.ticker, "name": item.name}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
+@app.delete("/api/watchlist/{ticker}")
+def remove_from_watchlist(ticker: str):
+    db = SessionLocal()
+    try:
+        item = db.query(WatchlistItem).filter(WatchlistItem.ticker == ticker.upper()).first()
+        if item:
+            db.delete(item)
+            db.commit()
+        return {"message": "Removed"}
+    finally:
+        db.close()
