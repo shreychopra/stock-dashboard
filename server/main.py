@@ -233,6 +233,52 @@ def search_tickers(q: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.get("/api/heatmap")
+def get_heatmap():
+    SECTORS = {
+        "Technology": ["AAPL", "MSFT", "NVDA", "GOOGL", "META", "TSLA", "AVGO", "ORCL"],
+        "Finance": ["JPM", "BAC", "GS", "MS", "WFC", "BLK", "AXP", "C"],
+        "Healthcare": ["UNH", "JNJ", "LLY", "ABBV", "MRK", "TMO", "ABT", "DHR"],
+        "Consumer": ["AMZN", "WMT", "HD", "MCD", "NKE", "SBUX", "TGT", "COST"],
+        "Energy": ["XOM", "CVX", "COP", "SLB", "EOG", "MPC", "PSX", "VLO"],
+        "Indian": ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS", "HINDUNILVR.NS", "ITC.NS", "BAJFINANCE.NS"],
+    }
+    try:
+        all_tickers = [t for tickers in SECTORS.values() for t in tickers]
+        data = yf.download(all_tickers, period="2d", auto_adjust=True, progress=False)
+        results = {}
+        for sector, tickers in SECTORS.items():
+            sector_data = []
+            for ticker in tickers:
+                try:
+                    if "Close" in data and ticker in data["Close"].columns:
+                        closes = data["Close"][ticker].dropna()
+                        if len(closes) >= 2:
+                            prev, curr = float(closes.iloc[-2]), float(closes.iloc[-1])
+                            change = round((curr - prev) / prev * 100, 2)
+                        elif len(closes) == 1:
+                            curr = float(closes.iloc[-1])
+                            change = 0.0
+                        else:
+                            continue
+                        info = yf.Ticker(ticker).fast_info
+                        name = getattr(info, "display_name", None) or ticker
+                        sector_data.append({
+                            "ticker": ticker,
+                            "name": name,
+                            "price": round(curr, 2),
+                            "change": change,
+                        })
+                    else:
+                        continue
+                except Exception:
+                    continue
+            results[sector] = sector_data
+        return results
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 # ─── Watchlist routes ─────────────────────────────────────
 @app.get("/api/watchlist")
 def get_watchlist():

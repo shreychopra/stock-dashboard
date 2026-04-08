@@ -20,16 +20,16 @@ function formatMarketCap(val, currency) {
   if (!val) return "\u2014"
   const sym = getCurrencySymbol(currency)
   if (val >= 1e12) return sym + (val / 1e12).toFixed(2) + "T"
-  if (val >= 1e9)  return sym + (val / 1e9).toFixed(2) + "B"
-  if (val >= 1e6)  return sym + (val / 1e6).toFixed(2) + "M"
+  if (val >= 1e9) return sym + (val / 1e9).toFixed(2) + "B"
+  if (val >= 1e6) return sym + (val / 1e6).toFixed(2) + "M"
   return sym + val
 }
 
 function formatLargeNum(val) {
   if (!val) return "\u2014"
   if (val >= 1e12) return (val / 1e12).toFixed(2) + "T"
-  if (val >= 1e9)  return (val / 1e9).toFixed(2) + "B"
-  if (val >= 1e6)  return (val / 1e6).toFixed(2) + "M"
+  if (val >= 1e9) return (val / 1e9).toFixed(2) + "B"
+  if (val >= 1e6) return (val / 1e6).toFixed(2) + "M"
   return val.toFixed(0)
 }
 
@@ -86,26 +86,30 @@ export default function App() {
   const [compareT2, setCompareT2] = useState("")
   const [compareData, setCompareData] = useState(null)
   const [compareLoading, setCompareLoading] = useState(false)
+  const [heatmapData, setHeatmapData] = useState(null)
+  const [heatmapLoading, setHeatmapLoading] = useState(false)
   const [history, setHistory] = useState(() => {
     try { return JSON.parse(localStorage.getItem("searchHistory") || "[]") } catch { return [] }
   })
   const suggestTimer = useRef(null)
   const wrapperRef = useRef(null)
 
+
   useEffect(() => {
     fetchWatchlist()
+    if (page === "heatmap" && !heatmapData) loadHeatmap()
     function handleClick(e) {
       if (wrapperRef.current && !wrapperRef.current.contains(e.target)) setShowSuggestions(false)
     }
     document.addEventListener("mousedown", handleClick)
     return () => document.removeEventListener("mousedown", handleClick)
-  }, [])
+  }, [page])
 
   async function fetchWatchlist() {
     try {
       const res = await fetch(`${API}/api/watchlist`)
       setWatchlist(await res.json())
-    } catch {}
+    } catch { }
   }
 
   async function addToWatchlist(t, name) {
@@ -130,7 +134,7 @@ export default function App() {
         const res = await fetch(`${API}/api/search?q=${encodeURIComponent(val)}`)
         const d = await res.json()
         setSuggestions(d); setShowSuggestions(d.length > 0)
-      } catch {}
+      } catch { }
     }, 300)
   }
 
@@ -171,7 +175,7 @@ export default function App() {
     try {
       const res = await fetch(`${API}/api/financials/${ticker}`)
       setFinancials(await res.json())
-    } catch {}
+    } catch { }
   }
 
   async function changePeriod(p) {
@@ -181,7 +185,7 @@ export default function App() {
     try {
       const res = await fetch(`${API}/api/stock/${ticker}?period=${p}`)
       setData(await res.json())
-    } catch {}
+    } catch { }
     setLoading(false)
   }
 
@@ -192,8 +196,17 @@ export default function App() {
       const res = await fetch(`${API}/api/compare?t1=${compareT1.toUpperCase()}&t2=${compareT2.toUpperCase()}&period=${period}`)
       if (!res.ok) throw new Error("Failed")
       setCompareData(await res.json())
-    } catch {}
+    } catch { }
     setCompareLoading(false)
+  }
+
+  async function loadHeatmap() {
+    setHeatmapLoading(true)
+    try {
+      const res = await fetch(`${API}/api/heatmap`)
+      setHeatmapData(await res.json())
+    } catch { }
+    setHeatmapLoading(false)
   }
 
   const isPositive = data && data.change >= 0
@@ -241,7 +254,7 @@ export default function App() {
 
         {/* Page nav */}
         <div className="flex gap-1">
-          {[["stock","Stock"],["compare","Compare"],["watchlist","Watchlist"]].map(([p, label]) => (
+          {[["stock", "Stock"], ["compare", "Compare"], ["watchlist", "Watchlist"], ["heatmap", "Heatmap"]].map(([p, label]) => (
             <button key={p} onClick={() => setPage(p)}
               className={`text-sm px-3 py-1.5 rounded-lg font-medium ${page === p ? "bg-blue-600 text-white" : dark ? "text-gray-400 hover:text-gray-200" : "text-gray-500 hover:text-gray-800"}`}>
               {label}{p === "watchlist" && watchlist.length > 0 && <span className="ml-1 text-xs bg-blue-100 text-blue-600 px-1.5 py-0.5 rounded-full">{watchlist.length}</span>}
@@ -327,6 +340,74 @@ export default function App() {
           </div>
         )}
 
+
+        {/* ── Heatmap Page ── */}
+        {page === "heatmap" && (
+          <div>
+            <div className="flex items-center justify-between mb-6">
+              <h1 className={dark ? "text-xl font-bold text-gray-100" : "text-xl font-bold text-gray-800"}>Market heatmap</h1>
+              <button
+                onClick={loadHeatmap}
+                className={dark ? "text-xs px-3 py-1.5 rounded-full bg-gray-700 text-gray-300 hover:bg-gray-600" : "text-xs px-3 py-1.5 rounded-full bg-gray-100 text-gray-500 hover:bg-gray-200"}
+              >
+                Refresh
+              </button>
+            </div>
+
+            {heatmapLoading && (
+              <div className="text-center py-24">
+                <p className={dark ? "text-gray-500 text-sm" : "text-gray-400 text-sm"}>Loading market data...</p>
+                <p className={dark ? "text-gray-600 text-xs mt-2" : "text-gray-300 text-xs mt-2"}>Fetching {Object.values(heatmapData || {}).flat().length || "30+"} stocks...</p>
+              </div>
+            )}
+
+            {!heatmapLoading && heatmapData && Object.entries(heatmapData).map(([sector, stocks]) => (
+              <div key={sector} className="mb-8">
+                <p className={dark ? "text-xs font-medium text-gray-400 mb-3 uppercase tracking-wider" : "text-xs font-medium text-gray-400 mb-3 uppercase tracking-wider"}>{sector}</p>
+                <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-2">
+                  {stocks.map(stock => {
+                    const change = stock.change
+                    const abs = Math.abs(change)
+                    const intensity = Math.min(abs / 3, 1)
+                    let bg, textColor
+                    if (change > 0) {
+                      const g = Math.round(100 + intensity * 100)
+                      bg = dark ? `rgba(0, ${g}, 60, 0.85)` : `rgba(0, ${g}, 60, 0.15)`
+                      textColor = dark ? `rgb(80, 255, 150)` : `rgb(0, ${g}, 60)`
+                    } else if (change < 0) {
+                      const r = Math.round(150 + intensity * 100)
+                      bg = dark ? `rgba(${r}, 0, 0, 0.85)` : `rgba(${r}, 0, 0, 0.15)`
+                      textColor = dark ? `rgb(255, 100, 100)` : `rgb(${r}, 0, 0)`
+                    } else {
+                      bg = dark ? "rgba(75,85,99,0.5)" : "rgba(156,163,175,0.15)"
+                      textColor = dark ? "#9ca3af" : "#6b7280"
+                    }
+                    return (
+                      <button
+                        key={stock.ticker}
+                        onClick={() => loadStock(stock.ticker)}
+                        className="rounded-lg p-2 text-center transition-transform hover:scale-105"
+                        style={{ background: bg }}
+                      >
+                        <p className="text-xs font-bold" style={{ color: textColor }}>{stock.ticker.replace(".NS", "")}</p>
+                        <p className="text-xs font-medium mt-0.5" style={{ color: textColor }}>
+                          {change > 0 ? "+" : ""}{change}%
+                        </p>
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            ))}
+
+            {!heatmapLoading && !heatmapData && (
+              <div className="text-center py-24">
+                <p className={dark ? "text-gray-500 text-sm" : "text-gray-400 text-sm"}>Click refresh to load market data.</p>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* ── Stock Page ── */}
         {page === "stock" && (
           <div>
@@ -377,12 +458,12 @@ export default function App() {
                   <MetricCard label="Market Cap" value={formatMarketCap(data.marketCap, data.currency)} dark={dark} />
                   <MetricCard label="P/E Ratio" value={data.pe || "\u2014"} dark={dark} />
                   <MetricCard label="52W High" value={data.high52 ? `${sym}${data.high52}` : "\u2014"} dark={dark} />
-                  <MetricCard label="52W Low"  value={data.low52  ? `${sym}${data.low52}`  : "\u2014"} dark={dark} />
+                  <MetricCard label="52W Low" value={data.low52 ? `${sym}${data.low52}` : "\u2014"} dark={dark} />
                 </div>
 
                 {/* Tab bar */}
                 <div className="flex gap-1 mb-4">
-                  {[["chart","Chart"],["financials","Financials"],["news","News"]].map(([t, label]) => (
+                  {[["chart", "Chart"], ["financials", "Financials"], ["news", "News"]].map(([t, label]) => (
                     <button key={t} onClick={() => { setActiveTab(t); if (t === "financials") loadFinancials() }}
                       className={`text-sm px-4 py-2 rounded-lg font-medium ${activeTab === t ? "bg-blue-600 text-white" : dark ? "text-gray-400 hover:text-gray-200" : "text-gray-500 hover:text-gray-800"}`}>
                       {label}
@@ -403,7 +484,7 @@ export default function App() {
                         ))}
                       </div>
                       <div className={dark ? "flex rounded-lg overflow-hidden border border-gray-600 ml-auto" : "flex rounded-lg overflow-hidden border border-gray-200 ml-auto"}>
-                        {["line","candle"].map(t => (
+                        {["line", "candle"].map(t => (
                           <button key={t} onClick={() => setChartType(t)}
                             className={`text-xs px-3 py-1.5 font-medium ${chartType === t ? "bg-blue-600 text-white" : dark ? "bg-gray-700 text-gray-400" : "bg-white text-gray-500"}`}>
                             {t === "line" ? "Line" : "Candle"}
@@ -412,7 +493,7 @@ export default function App() {
                       </div>
                     </div>
                     <div className="flex gap-2 flex-wrap mb-4">
-                      {[{ key: "ma50", label: "MA50", color: "#f59e0b" },{ key: "bb", label: "Bollinger", color: "#8b5cf6" },{ key: "rsi", label: "RSI", color: "#06b6d4" },{ key: "macd", label: "MACD", color: "#10b981" }].map(ind => (
+                      {[{ key: "ma50", label: "MA50", color: "#f59e0b" }, { key: "bb", label: "Bollinger", color: "#8b5cf6" }, { key: "rsi", label: "RSI", color: "#06b6d4" }, { key: "macd", label: "MACD", color: "#10b981" }].map(ind => (
                         <button key={ind.key} onClick={() => toggleIndicator(ind.key)}
                           className={`text-xs px-3 py-1 rounded-full border font-medium ${indicators[ind.key] ? "text-white border-transparent" : dark ? "bg-transparent border-gray-600 text-gray-400" : "bg-transparent border-gray-200 text-gray-400"}`}
                           style={indicators[ind.key] ? { background: ind.color, borderColor: ind.color } : {}}>
@@ -424,7 +505,7 @@ export default function App() {
                       <ComposedChart data={histData}>
                         <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
                         <XAxis dataKey="date" tick={{ fontSize: 11, fill: axisColor }} tickLine={false} interval="preserveStartEnd" />
-                        <YAxis tick={{ fontSize: 11, fill: axisColor }} tickLine={false} axisLine={false} tickFormatter={v => `${sym}${v}`} domain={["auto","auto"]} />
+                        <YAxis tick={{ fontSize: 11, fill: axisColor }} tickLine={false} axisLine={false} tickFormatter={v => `${sym}${v}`} domain={["auto", "auto"]} />
                         <Tooltip formatter={(val, name) => {
                           const labels = { close: "Price", ma50: "MA50", bb_upper: "BB Upper", bb_lower: "BB Lower", bb_mid: "BB Mid" }
                           return [`${sym}${val}`, labels[name] || name]
