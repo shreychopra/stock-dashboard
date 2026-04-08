@@ -6,7 +6,7 @@ import {
   ReferenceLine, Cell
 } from "recharts"
 
-const API = "http://localhost:8000"
+const API = import.meta.env.VITE_API_URL || "http://localhost:8000"
 const PERIODS = ["1wk", "1mo", "3mo", "6mo", "1y", "5y"]
 const PERIOD_LABELS = { "1wk": "1W", "1mo": "1M", "3mo": "3M", "6mo": "6M", "1y": "1Y", "5y": "5Y" }
 const MAX_HISTORY = 6
@@ -76,7 +76,9 @@ export default function App() {
   const [activeTab, setActiveTab] = useState("chart")
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
-  const [dark, setDark] = useState(false)
+  const [dark, setDark] = useState(() => {
+    try { return localStorage.getItem("darkMode") === "true" } catch { return false }
+  })
   const [suggestions, setSuggestions] = useState([])
   const [showSuggestions, setShowSuggestions] = useState(false)
   const [chartType, setChartType] = useState("line")
@@ -262,7 +264,11 @@ export default function App() {
           ))}
         </div>
 
-        <button onClick={() => setDark(d => !d)} className={dark ? "ml-auto text-xs px-3 py-1.5 rounded-full bg-gray-700 text-gray-300 hover:bg-gray-600 flex-shrink-0" : "ml-auto text-xs px-3 py-1.5 rounded-full bg-gray-100 text-gray-500 hover:bg-gray-200 flex-shrink-0"}>
+        <button onClick={() => setDark(d => {
+          const next = !d
+          localStorage.setItem("darkMode", next)
+          return next
+        })} className={dark ? "ml-auto text-xs px-3 py-1.5 rounded-full bg-gray-700 text-gray-300 hover:bg-gray-600 flex-shrink-0" : "ml-auto text-xs px-3 py-1.5 rounded-full bg-gray-100 text-gray-500 hover:bg-gray-200 flex-shrink-0"}>
           {dark ? "Light" : "Dark"}
         </button>
       </div>
